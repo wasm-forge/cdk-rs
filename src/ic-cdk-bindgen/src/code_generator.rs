@@ -497,7 +497,7 @@ pub fn compile(config: &Config, env: &TypeEnv, actor: &Option<Type>) -> String {
     let header = format!(
         r#"// This is an experimental feature to generate Rust binding from Candid.
 // You may want to manually adjust some of the types.
-//#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports)]
 use {}::{{self, CandidType, Deserialize, Principal, Encode, Decode}};
 "#,
         config.candid_crate
