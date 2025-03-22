@@ -10,12 +10,7 @@ pub enum Target {
     CanisterCall,
     Agent,
     CanisterStub,
-    Provider,
-}
-
-pub trait CustomProvider {
-    fn prefix(&self) -> &str;
-    fn clone_provider(&self) -> &'static dyn CustomProvider;
+    Builder,
 }
 
 #[derive(Clone)]
@@ -328,7 +323,7 @@ fn pp_function<'a>(config: &Config, id: &'a str, func: &'a Function) -> RcDoc<'a
         Target::CanisterCall => "&self",
         Target::Agent => "&self",
         Target::CanisterStub => unimplemented!(),
-        Target::Provider => "&self",
+        Target::Builder => "&self",
     });
     let args = concat(
         std::iter::once(arg_prefix).chain(
@@ -358,7 +353,7 @@ fn pp_function<'a>(config: &Config, id: &'a str, func: &'a Function) -> RcDoc<'a
             ),
         },
         Target::CanisterStub => unimplemented!(),
-        Target::Provider => match func.rets.len() {
+        Target::Builder => match func.rets.len() {
             0 => str("super::CallBuilder<()>"),
             1 => enclose("super::CallBuilder<", pp_ty(&func.rets[0], &empty), ">"),
             _ => enclose(
@@ -373,7 +368,7 @@ fn pp_function<'a>(config: &Config, id: &'a str, func: &'a Function) -> RcDoc<'a
     };
     let sig_prefix = match config.target {
         Target::CanisterCall | Target::Agent | Target::CanisterStub => kwd("pub async fn"),
-        Target::Provider => kwd("pub fn"),
+        Target::Builder => kwd("pub fn"),
     };
     let sig = sig_prefix
         .append(name)
@@ -412,7 +407,7 @@ fn pp_function<'a>(config: &Config, id: &'a str, func: &'a Function) -> RcDoc<'a
                         .append("Ok(Decode!(&bytes").append(rets).append(")?)")
         }
         Target::CanisterStub => unimplemented!(),
-        Target::Provider => {
+        Target::Builder => {
             let mode = if func.is_query() {
                 "super::CallMode::Query"
             } else {
@@ -426,7 +421,7 @@ fn pp_function<'a>(config: &Config, id: &'a str, func: &'a Function) -> RcDoc<'a
                 .append(str("Encode!").append(enclose("(", args, ");")))
                 .append(RcDoc::hardline())
                 .append(enclose(
-                    "self.provider.call(",
+                    "self.caller.call(",
                     RcDoc::intersperse(
                         [
                             str("self.canister_id"),
@@ -469,12 +464,12 @@ fn pp_actor<'a>(config: &'a Config, env: &'a TypeEnv, actor: &'a Type) -> RcDoc<
         Target::CanisterCall => str("(pub Principal);"),
         Target::Agent => str("(pub Principal, pub &'a ic_agent::Agent);"),
         Target::CanisterStub => unimplemented!(),
-        Target::Provider => enclose_space(
+        Target::Builder => enclose_space(
             "{",
             RcDoc::intersperse(
                 [
                     str("pub canister_id: Principal"),
-                    str("pub provider: super::Provider"),
+                    str("pub caller: super::Caller"),
                 ],
                 str(",").append(RcDoc::hardline()),
             ),
@@ -488,7 +483,7 @@ fn pp_actor<'a>(config: &'a Config, env: &'a TypeEnv, actor: &'a Type) -> RcDoc<
         Target::CanisterCall => format!("impl {} ", struct_name),
         Target::Agent => format!("impl<'a> {}<'a> ", struct_name),
         Target::CanisterStub => unimplemented!(),
-        Target::Provider => format!("impl {} ", struct_name),
+        Target::Builder => format!("impl {} ", struct_name),
     };
     let res = service_def
         .append(RcDoc::hardline())
@@ -513,7 +508,7 @@ fn pp_actor<'a>(config: &'a Config, env: &'a TypeEnv, actor: &'a Type) -> RcDoc<
             ),
             Target::Agent => "".to_string(),
             Target::CanisterStub => unimplemented!(),
-            Target::Provider => "".to_string(),
+            Target::Builder => "".to_string(),
         };
         res.append(id).append(RcDoc::hardline()).append(instance)
     } else {
@@ -527,12 +522,9 @@ fn pp_actor<'a>(config: &'a Config, env: &'a TypeEnv, actor: &'a Type) -> RcDoc<
 pub fn pp_actor_new<'a>(config: &'a Config, struct_name: String) -> RcDoc<'a> {
     match config.target {
         Target::CanisterCall | Target::Agent | Target::CanisterStub => RcDoc::nil(),
-        Target::Provider => {
+        Target::Builder => {
             let args = RcDoc::intersperse(
-                [
-                    str("provider: &super::Provider"),
-                    str("canister_id: Principal"),
-                ],
+                [str("caller: &super::Caller"), str("canister_id: Principal")],
                 ", ",
             );
             let body = RcDoc::text(struct_name.clone())
@@ -540,7 +532,7 @@ pub fn pp_actor_new<'a>(config: &'a Config, struct_name: String) -> RcDoc<'a> {
                 .append(enclose_space(
                     "{",
                     RcDoc::intersperse(
-                        [str("canister_id"), str("provider: provider.clone()")],
+                        [str("canister_id"), str("caller: caller.clone()")],
                         str(",").append(RcDoc::line()),
                     ),
                     "}",
@@ -567,9 +559,9 @@ pub fn pp_actor_deploy<'a>(
 
     match config.target {
         Target::CanisterCall | Target::Agent | Target::CanisterStub => RcDoc::nil(),
-        Target::Provider => {
+        Target::Builder => {
             let args = RcDoc::intersperse(
-                std::iter::once(str("provider: &super::Provider")).chain(
+                std::iter::once(str("deployer: &super::Deployer")).chain(
                     init_args.iter().enumerate().map(|(i, ty)| {
                         RcDoc::as_string(format!("arg{i}: ")).append(pp_ty(ty, &empty))
                     }),
@@ -589,17 +581,9 @@ pub fn pp_actor_deploy<'a>(
             let body = str("let args = ")
                 .append(str("Encode!").append(enclose("(", args, ");")))
                 .append(RcDoc::hardline())
-                .append(str("let provider_clone = provider.clone();"))
-                .append(RcDoc::hardline())
                 .append(enclose(
-                    "provider.deploy(",
-                    RcDoc::intersperse(
-                        [
-                            str("args"),
-                            str("Box::new(move |canister_id| new(&provider_clone, canister_id))"),
-                        ],
-                        ", ",
-                    ),
+                    "deployer.deploy(",
+                    RcDoc::intersperse([str("args"), str("new")], ", "),
                     ")",
                 ));
 
@@ -623,7 +607,7 @@ use {}::{{self, CandidType, Deserialize, Principal, Encode, Decode}};
             Target::CanisterCall => "use ic_cdk::api::call::CallResult as Result;\n",
             Target::Agent => "type Result<T> = std::result::Result<T, ic_agent::AgentError>;\n",
             Target::CanisterStub => "",
-            Target::Provider => "",
+            Target::Builder => "",
         };
     let (env, actor) = nominalize_all(env, actor);
     let def_list: Vec<_> = if let Some(actor) = &actor {
