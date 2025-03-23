@@ -477,7 +477,9 @@ fn pp_actor<'a>(config: &'a Config, env: &'a TypeEnv, actor: &'a Type) -> RcDoc<
         ),
     };
 
-    let service_def = service_def_prefix.append(service_def_body);
+    let service_def = service_def_prefix
+        .append(service_def_body)
+        .append(RcDoc::hardline());
 
     let service_impl = match config.target {
         Target::CanisterCall => format!("impl {} ", struct_name),
@@ -537,11 +539,12 @@ pub fn pp_actor_new<'a>(config: &'a Config, struct_name: String) -> RcDoc<'a> {
                     ),
                     "}",
                 ));
-            enclose("pub fn new(", args, ")")
+            let result = enclose("pub fn new(", args, ")")
                 .append(format!("-> {}", struct_name))
                 .append(RcDoc::space())
                 .append(enclose_space("{", body, "}"))
-                .append(RcDoc::hardline())
+                .append(RcDoc::hardline());
+            RcDoc::hardline().append(result)
         }
     }
 }
@@ -587,8 +590,11 @@ pub fn pp_actor_deploy<'a>(
                     ")",
                 ));
 
-            sig.append(RcDoc::hardline())
-                .append(enclose_space("{", body, "}"))
+            let result = sig
+                .append(RcDoc::hardline())
+                .append(enclose_space("{", body, "}"));
+
+            RcDoc::hardline().append(result)
         }
     }
 }
@@ -597,7 +603,7 @@ pub fn compile(config: &Config, env: &TypeEnv, actor: &Option<Type>) -> String {
     let header = format!(
         r#"// This is an experimental feature to generate Rust binding from Candid.
 // You may want to manually adjust some of the types.
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, non_snake_case)]
 use {}::{{self, CandidType, Deserialize, Principal, Encode, Decode}};
 "#,
         config.candid_crate
