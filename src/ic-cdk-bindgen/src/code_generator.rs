@@ -18,6 +18,7 @@ pub struct Config {
     candid_crate: String,
     type_attributes: String,
     canister_id: Option<candid::Principal>,
+    canister_wasm_path: Option<String>,
     service_name: String,
     target: Target,
 }
@@ -28,6 +29,7 @@ impl Config {
             candid_crate: "candid".to_string(),
             type_attributes: "".to_string(),
             canister_id: None,
+            canister_wasm_path: None,
             service_name: "service".to_string(),
             target: Target::CanisterCall,
         }
@@ -44,6 +46,11 @@ impl Config {
     /// Only generates SERVICE struct if canister_id is not provided
     pub fn set_canister_id(&mut self, id: candid::Principal) -> &mut Self {
         self.canister_id = Some(id);
+        self
+    }
+
+    pub fn set_canister_wasm_path(&mut self, wasm_path: String) -> &mut Self {
+        self.canister_wasm_path = Some(wasm_path);
         self
     }
     /// Service name when canister id is provided
@@ -519,6 +526,8 @@ fn pp_actor<'a>(config: &'a Config, env: &'a TypeEnv, actor: &'a Type) -> RcDoc<
 
     res.append(pp_actor_new(config, struct_name.clone()))
         .append(pp_actor_deploy(config, struct_name, init_args))
+        .append(pp_actor_canister_id(config))
+        .append(pp_actor_wasm(config))
 }
 
 pub fn pp_actor_new<'a>(config: &'a Config, struct_name: String) -> RcDoc<'a> {
@@ -584,16 +593,82 @@ pub fn pp_actor_deploy<'a>(
             let body = str("let args = ")
                 .append(str("Encode!").append(enclose("(", args, ");")))
                 .append(RcDoc::hardline())
+                .append(str("let result = "))
                 .append(enclose(
                     "deployer.deploy(",
                     RcDoc::intersperse([str("args"), str("new")], ", "),
-                    ")",
-                ));
+                    ");",
+                ))
+                .append(RcDoc::hardline())
+                .append(str("let result = if let Some(id) = canister_id()"))
+                .append(enclose("{", str("result.with_canister_id(id)"), "}"))
+                .append(enclose("else {", str("result"), "};"))
+                .append(RcDoc::hardline())
+                .append(str("if let Some(wasm) = wasm()"))
+                .append(enclose("{", str("result.with_wasm(wasm)"), "}"))
+                .append(enclose("else {", str("result"), "}"));
 
             let result = sig
                 .append(RcDoc::hardline())
                 .append(enclose_space("{", body, "}"));
 
+            RcDoc::hardline().append(result)
+        }
+    }
+}
+
+pub fn pp_actor_canister_id<'a>(config: &'a Config) -> RcDoc<'a> {
+    match config.target {
+        Target::CanisterCall | Target::Agent | Target::CanisterStub => RcDoc::nil(),
+        Target::Builder => {
+            let body = if let Some(canister_id) = config.canister_id {
+                RcDoc::text(format!(
+                    "Some(Principal::from_text(\"{}\").unwrap())",
+                    canister_id
+                ))
+            } else {
+                str("None")
+            };
+
+            let result = str("pub fn canister_id() -> Option<Principal>")
+                .append(RcDoc::space())
+                .append(enclose_space("{", body, "}"))
+                .append(RcDoc::hardline());
+            RcDoc::hardline().append(result)
+        }
+    }
+}
+
+pub fn pp_actor_wasm<'a>(config: &'a Config) -> RcDoc<'a> {
+    match config.target {
+        Target::CanisterCall | Target::Agent | Target::CanisterStub => RcDoc::nil(),
+        Target::Builder => {
+            let body = if let Some(wasm_path) = config.canister_wasm_path.clone() {
+                let path = if wasm_path.starts_with("$HOME") {
+                    let wasm_path = wasm_path[5..].to_string();
+                    str("let mut path = std::path::PathBuf::new();")
+                        .append(str("path.push(std::env::var(\"HOME\").unwrap());"))
+                        .append(RcDoc::text(format!("path.push(\"{}\");", wasm_path)))
+                } else {
+                    str("let mut path = std::path::PathBuf::new();")
+                        .append(RcDoc::text(format!("path.push(\"{}\");", wasm_path)))
+                };
+
+                path.append(str("let wasm = std::fs::read(path.as_path())"))
+                    .append(".unwrap_or_else")
+                    .append(enclose(
+                        "(",
+                        str("|_| panic!(\"wasm binary not found: {:?}\", path)"),
+                        ");",
+                    ))
+                    .append(str("Some(wasm)"))
+            } else {
+                str("None")
+            };
+            let result = str("pub fn wasm() -> Option<Vec<u8>>")
+                .append(RcDoc::space())
+                .append(enclose_space("{", body, "}"))
+                .append(RcDoc::hardline());
             RcDoc::hardline().append(result)
         }
     }
